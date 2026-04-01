@@ -117,7 +117,7 @@ class MeloAgent(Agent):
             agent_id=self.get_id(),
             time=t,
             order_type=side,
-            order_id=random.randint(1, 10000000)
+            order_id=random.randint(1, 10000000) # TODO: change to a trackable id
         )
         return [order]
 

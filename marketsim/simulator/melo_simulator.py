@@ -352,7 +352,7 @@ class MELOSimulatorSampledArrival:
                 for agent_id in agents:
                     #Normal orderbook traders
                     agent: Agent = self.agents[agent_id]
-                    self.market.withdraw_all(agent_id)
+                    self.market.withdraw_all(agent_id)  # TODO: replace this!
                     side = random.choice([BUY, SELL])
                     if random.random() < agent.melo_proportion:
                         marketSelection = MELO

@@ -1,1 +1,0 @@
-Fix error by changing parameter order: put strategy_names first, then simulator
