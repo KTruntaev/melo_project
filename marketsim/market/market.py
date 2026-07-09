@@ -32,6 +32,9 @@ class Market:
             self.event_queue.schedule_activity(order)
             # print(f"{type}: EventQueue adding order {order.order_id} at time {self.get_time()} for time {order.time}")
 
+    def cancel_order(self, order_id: int):
+        self.order_book.remove(order_id)
+
     def get_time(self):
         return self.event_queue.get_current_time()
 

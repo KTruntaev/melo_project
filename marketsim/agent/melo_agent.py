@@ -94,6 +94,9 @@ class MeloAgent(Agent):
     def take_action(self, side: bool, market) -> List[Order]:
         t = self.market.get_time()
         self.generate_melo_pv()
+
+        self.cancel_orders()
+
         # print("ACTION WAS TAKEN AT TIME ",t, " by agent, ", self.agent_id, "at PV: ", self.meloPV )
         # if side == BUY:
         price = self.estimate_fundamental() + self.meloPV
@@ -268,6 +271,7 @@ class MeloAgent(Agent):
     
     def cancel_orders(self):
         """Cancel all active orders."""
+        # print(f"[{self.agent_id}]: cancelling {self.active_orders}")
         for order_id, order in list(self.active_orders.items()):
             if order["market"] == "CDA" and self.market is not None:
                 self.market.cancel_order(order_id)

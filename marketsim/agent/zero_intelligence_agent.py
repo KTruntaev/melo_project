@@ -1,5 +1,7 @@
 import random
 import numpy as np
+
+from agent import agent
 from marketsim.agent.agent import Agent
 from marketsim.market.market import Market
 from marketsim.fourheap.order import Order
@@ -28,9 +30,12 @@ class ZIAgent(Agent):
         self.eta = eta
         self.melo_trades = []
 
+        # TODO: ZI Agents don't track their orders!!!s
+
         #In case we want the agent to act different based on the market
         self.cda_proportion = cda_proportion
         self.melo_proportion = melo_proportion
+        # print(f"[{self.agent_id}] my melo_proportion is {self.melo_proportion}")
 
     def generate_pv(self):
         #Generate new private values
@@ -79,6 +84,7 @@ class ZIAgent(Agent):
 
     def take_action(self, side, market = CDA, seed = 0):
         t = self.market.get_time()
+        # print(f"[{self.agent_id}] my market is {'CDA' if market == 1 else 'MELO'}")
         # random.seed(t + seed)
         estimate = self.estimate_fundamental() 
         # estimate = self.estimate_fundamental() + np.random.normal(0, np.sqrt(1e6))
@@ -98,7 +104,8 @@ class ZIAgent(Agent):
         if self.eta != 1.0:
             if side == BUY:
                 surplus = price - estimate
-                best_price = self.market.order_book.get_best_ask()
+                best_price = self.market.order_book.get_best_ask() # so ZIs can't trade on MELO?
+                # TODO: so the ZI agents check the lit exchange but might place orders on MELO???
                 if (price - best_price) > self.eta*surplus and best_price != np.inf:
                     price = best_price
             else:
@@ -123,6 +130,17 @@ class ZIAgent(Agent):
     def update_position(self, q, p):
         self.position += q
         self.cash += p
+
+    def cancel_orders(self):
+        """Cancel all active orders."""
+        # print(f"[{self.agent_id}]: cancelling {self.active_orders}")
+        for order_id, order in list(self.active_orders.items()):
+            if order["market"] == "CDA" and self.market is not None:
+                self.market.cancel_order(order_id)
+            # elif order["market"] == "MELO" and self.meloMarket is not None:
+            #     self.meloMarket.cancel_order(order_id)
+
+        self.active_orders = {}
 
     def __str__(self):
         return f'ZI{self.agent_id}'

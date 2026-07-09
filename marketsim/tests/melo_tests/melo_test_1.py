@@ -21,14 +21,16 @@ cum_fundamental_estimates = []
 cum_num_orders = []
 positions = defaultdict(float)
 remaining_orders = []
-REPS = 50
+REPS = 2
 
-MOBI = 10
+# MOBI = 10
+MOBI = 0
+ZI = 1
 
 for _ in tqdm(range(REPS)):
     fundamentals = []
-    sim = MELOSimulatorSampledArrival(num_background_agents=(30 + MOBI), 
-                                      sim_time=10000, 
+    sim = MELOSimulatorSampledArrival(num_background_agents=MOBI + ZI,
+                                      sim_time=1000,
                                       lam=6e-3, 
                                       mean=1e6, 
                                       num_strategic=MOBI,
@@ -36,12 +38,32 @@ for _ in tqdm(range(REPS)):
                                       r=0.0001, 
                                       shock_var=1e6, 
                                       q_max=10,
-                                      num_zi=30,
+                                      num_zi=ZI,
                                       num_hbl=0,
                                       pv_var=5e6,
                                       shade=[10,30])
     sim.run()
-    payoffs, positions_run, best_buy, best_ask, melo_trade, hbl_trades, buy_cancelled, sell_cancelled, elig, activation, active, melo_orders, fundamental_estimates, num_orders_placed, elig, activation, active= sim.end_sim()  # Dictionary {agent_id: payoff}
+    payoffs, positions_run, best_buy, best_ask, midpoint_prices, melo_trade, hbl_trades, buy_cancelled, sell_cancelled, elig, activation, active, melo_orders, fundamental_estimates, num_orders_placed, elig, activation, active= sim.end_sim()  # Dictionary {agent_id: payoff}
+    # sim_dict = sim.end_sim()
+    # print(sim_dict)
+    # payoffs
+    # positions_run
+    # best_buy
+    # best_ask
+    # melo_trade
+    # hbl_trades
+    # buy_cancelled
+    # sell_cancelled
+    # elig
+    # activation
+    # active
+    # melo_orders
+    # fundamental_estimates
+    # num_orders_placed
+    # elig
+    # activation,
+    # active
+
     fundamentals.append(sim.fundamentals)
     cum_fundamental_estimates.append(fundamental_estimates)
     cum_num_orders.append(num_orders_placed)
@@ -192,8 +214,8 @@ print(f"Average for keys 0-29: {avg_group1}")
 print(f"Average for keys 30+: {avg_group2}")
 
 print("TOTAL traded", sum(value for agent_id, value in avg_position.items() if agent_id >= 30) / 5)
-# print("AVERAGE BUY", np.mean(cum_buy_cancelled))
-# print("AVERAGE SELL", np.mean(cum_sell_cancelled))
+print("AVERAGE BUY CANCELLED", np.mean(cum_buy_cancelled))
+print("AVERAGE SELL CANCELLED", np.mean(cum_sell_cancelled))
 
 
 print("AVG REMOVED FROM ELIG", np.mean(cum_removed_eligibility))

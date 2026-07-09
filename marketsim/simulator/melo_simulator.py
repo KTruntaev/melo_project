@@ -154,9 +154,11 @@ class MELOSimulatorSampledArrival:
                         shade=shade,
                         pv_var=pv_var,
                         eta=eta,
-                        cda_proportion=1,
-                        melo_proportion=0,
+                        cda_proportion=0, #TODO 1
+                        melo_proportion=1, # TODO 0
                     ))
+                print(f"I am {self.agents[agent_id]} and my id is {agent_id}")
+
 
             for agent_id in range(num_zi, num_zi + num_hbl):
                 self.arrivals[self.arrival_times[self.arrival_index].item()].append(agent_id)
@@ -317,6 +319,7 @@ class MELOSimulatorSampledArrival:
                         cda_proportion=cda_proportion,
                         melo_proportion=melo_proportion
                     ))
+                print(f"I am {self.agents[strategic_agent_id]} and my id is {strategic_agent_id}")
                 strategic_agent_id += 1
         else:
             for strategy in self.strategies:
@@ -349,21 +352,34 @@ class MELOSimulatorSampledArrival:
             self.market.event_queue.set_time(self.time)
             
             if agents:
+                total_ZI_melo_orders = 0
                 for agent_id in agents:
                     #Normal orderbook traders
                     agent: Agent = self.agents[agent_id]
-                    self.market.withdraw_all(agent_id)  # TODO: replace this!
+                    # print(f" THERE ARE {len(self.meloMarket.order_book.agent_id_map[agent_id])} ORDERS")
+                    print("sell q len", self.meloMarket.order_book.sell_eligibility_queue.size)
+                    print("buy q len", self.meloMarket.order_book.buy_eligibility_queue.size)
+                    print("sell act q len", len(self.meloMarket.order_book.sell_active_queue))
+                    print("buy act q len", len(self.meloMarket.order_book.buy_active_queue))
+                    # TODO seems like the ZI's MELO orders nevevr get cancelled
+                    # self.market.withdraw_all(agent_id)  # TODO: replace this!
                     side = random.choice([BUY, SELL])
+                    print(f"I AM {agent} and my {agent.melo_proportion}")
                     if random.random() < agent.melo_proportion:
                         marketSelection = MELO
                     else:
                         marketSelection = CDA
                         
                     if marketSelection == MELO:
+                        print(f"{agent} WANT TO TRADE ON MELO")
                         #PLACE MELO
-                        orders = agent.take_action(side, marketSelection) 
+                        orders = agent.take_action(side, marketSelection)
+                        print(f"MY ORDERS {orders}")
+                        # TODO: so the order exists but doesn't go further
                         self.meloMarket.add_orders(orders)
-                        
+                        print(f"event queue: {self.meloMarket.event_queue.scheduled_activities}")
+
+                        total_ZI_melo_orders += len(self.meloMarket.order_book.agent_id_map[agent_id])
                         #TODO: add tracking of these orders
                     else:
                         #PLACE CDA ORDER
@@ -377,12 +393,18 @@ class MELOSimulatorSampledArrival:
                         self.arrival_index = 0
                     self.arrivals[self.arrival_times[self.arrival_index].item() + 1 + self.time].append(agent_id)
                     self.arrival_index += 1
-                    
+
+                # TODO: test????
+                order_placement = self.meloMarket.step(self.order_tracker, self.market.order_book.midprice)
+                if order_placement != -1:
+                    self.timesteps_melo_updates[order_placement + self.holding_period] = 1
+                # TODO end of test
+                print(f" THERE ARE {total_ZI_melo_orders} ZI MELO ORDERS TOTAL")
             if melo_agents:
                 for agent_id in melo_agents:
                     agent = self.agents[agent_id]
-                    self.meloMarket.withdraw_all(agent_id, self.order_tracker)
-                    self.market.withdraw_all(agent_id)
+                    # self.meloMarket.withdraw_all(agent_id, self.order_tracker)
+                    # self.market.withdraw_all(agent_id)
                     self.num_orders += 1
                     # Check if the agent has strategy parameters (works for both MeloAgent and ZIAgent)
                     assert hasattr(agent, 'cda_proportion') and hasattr(agent, 'melo_proportion')
@@ -509,6 +531,10 @@ class MELOSimulatorSampledArrival:
             
             if self.timesteps_melo_updates[t] != 0:
                 self.update_melo_market()
+
+            # print(self.order_tracker)
+            print(self.meloMarket.order_book.agent_id_map)
+            print("lit:", self.market.order_book.agent_id_map)
 
             # self.meloMarket.order_book.update_eligiblity_queue(self.time, self.order_tracker, self.market.order_book.midprice)
             # self.meloMarket.order_book.update_active_queue(self.time, self.order_tracker)

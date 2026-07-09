@@ -168,11 +168,13 @@ class MELOFourHeap(FourHeap):
                     self.buy_eligibility_queue.add_order(current_order)
                     #For tracking purposes
                     order_tracker[current_order.order_id] = "cancelled"
+                    # TODO it doesn't get actually cancelled -> just moved to eligibility queue
                     self.buy_cancelled.append((current_order, midprice))
 
                 while self.sell_active_queue and midprice < self.sell_active_queue[0].price:
                     current_order = self.sell_active_queue.popleft()
                     self.sell_eligibility_queue.add_order(current_order)
+                    # TODO it doesn't get actually cancelled -> just moved to eligibility queue
                     self.sell_cancelled.append((current_order, midprice))
                     order_tracker[current_order.order_id] = "cancelled"
 
