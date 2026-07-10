@@ -1,7 +1,6 @@
 import random
 import numpy as np
 
-from agent import agent
 from marketsim.agent.agent import Agent
 from marketsim.market.market import Market
 from marketsim.fourheap.order import Order
