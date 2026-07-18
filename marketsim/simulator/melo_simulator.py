@@ -227,6 +227,8 @@ class MELOSimulatorSampledArrival:
                             eta=eta,
                             cda_proportion=params["cda_proportion"],
                             melo_proportion=params["melo_proportion"],
+                            meloMarket=self.meloMarket,
+                            order_tracker=self.order_tracker,
                         ))
                 # --------------------------------------------------------------
                 # Schedule first MELO wake-up using role-specific arrival stream
@@ -289,6 +291,8 @@ class MELOSimulatorSampledArrival:
                                     eta=eta,
                                     cda_proportion=params["cda_proportion"],
                                     melo_proportion=params["melo_proportion"],
+                                    meloMarket=self.meloMarket,
+                                    order_tracker=self.order_tracker,
                                 ))
 
                         # Record role mapping for efficient lookup during step()

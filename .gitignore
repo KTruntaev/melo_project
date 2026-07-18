@@ -15,3 +15,6 @@
 *.jpg
 *.pyc
 *.png
+env/
+marketsim.egg-info/*
+.coverage
