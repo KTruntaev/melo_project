@@ -141,6 +141,8 @@ class MELOSimulatorSampledArrival:
 
         # print("R", r, "SHOCK", shock_var)
 
+        ### CREATE "BACKGROUND" AGENTS
+
         #Market is only passed in for access to fundamental. Melo doesn't care about that
         if not self.strategies_background:
             for agent_id in range(num_zi):
@@ -196,7 +198,8 @@ class MELOSimulatorSampledArrival:
                         melo_proportion=0,
                     ))
 
-            
+
+        ### CREATE "STRATEGIC" AGENTS
         # Handle strategic agents - either role-based or legacy strategy-based
         strategic_agent_id = num_zi + num_hbl
         
@@ -394,11 +397,6 @@ class MELOSimulatorSampledArrival:
                     self.arrivals[self.arrival_times[self.arrival_index].item() + 1 + self.time].append(agent_id)
                     self.arrival_index += 1
 
-                # TODO: test????
-                order_placement = self.meloMarket.step(self.order_tracker, self.market.order_book.midprice)
-                if order_placement != -1:
-                    self.timesteps_melo_updates[order_placement + self.holding_period] = 1
-                # TODO end of test
                 print(f" THERE ARE {total_ZI_melo_orders} ZI MELO ORDERS TOTAL")
             if melo_agents:
                 for agent_id in melo_agents:
@@ -447,11 +445,12 @@ class MELOSimulatorSampledArrival:
                         self.arrivals_melo[next_time].append(agent_id)
                         self.arrival_index_zi += 1
 
-                # Process new MELO market orders
-                order_placement = self.meloMarket.step(self.order_tracker, self.market.order_book.midprice)
-                if order_placement != -1:
-                    self.timesteps_melo_updates[order_placement + self.holding_period] = 1
-                
+            # Drain all MELO orders submitted at this tick exactly once, after
+            # both regular and strategic arrivals have enqueued their orders.
+            order_placement = self.meloMarket.step(self.order_tracker, self.market.order_book.midprice)
+            if order_placement != -1:
+                self.timesteps_melo_updates[order_placement + self.holding_period] = 1
+
             # Process CDA market orders
             prev_midpoint = self.market.order_book.midprice
             new_orders = self.market.step()

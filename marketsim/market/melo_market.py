@@ -11,6 +11,7 @@ class MeloMarket(Market):
         self.holding_period = holding_period
         self.order_book = MELOFourHeap(holding_period)
         self.orders_rec = []
+        self._step_count = 0
 
     def clear_market(self):
         new_orders = self.order_book.market_clear()
@@ -21,6 +22,7 @@ class MeloMarket(Market):
         self.order_book.withdraw_all(agent_id, order_tracker)
 
     def step(self, order_tracker, midprice):
+        self._step_count += 1
         current_time = self.get_time()
         orders = self.event_queue.step()
         
@@ -39,5 +41,6 @@ class MeloMarket(Market):
         self.order_book = MELOFourHeap(self.holding_period)
         self.matched_orders = []
         self.event_queue = EventQueue()
+        self._step_count = 0
         if fundamental is not None:
             self.fundamental = fundamental

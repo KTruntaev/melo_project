@@ -1,6 +1,7 @@
 import contextlib
 import io
 import random
+from collections import defaultdict
 
 import numpy as np
 import pytest
@@ -67,6 +68,13 @@ def _melo_orders_scheduled(sim):
     return sum(len(v) for v in sim.meloMarket.event_queue.scheduled_activities.values())
 
 
+def _arrival_tick_count(sim):
+    return sum(
+        bool(sim.arrivals[t] or sim.arrivals_melo[t])
+        for t in range(sim.sim_time)
+    )
+
+
 @pytest.mark.parametrize("seed", SEEDS)
 def test_buggy_sim_strands_bg_melo_orders(seed):
     sim = _build_and_run(BuggySim, seed=seed)
@@ -124,13 +132,17 @@ def test_fix_yields_more_melo_activity_than_bug(seed):
     )
 
 
-def _build_buggy_sim_with_mobi():
-    return BuggySim(
+def _build_sim_with_mobi(sim_cls):
+    return sim_cls(
         num_background_agents=2,
         num_strategic=1,
         num_zi=1,
         **BASE_KWARGS,
     )
+
+
+def _build_buggy_sim_with_mobi():
+    return _build_sim_with_mobi(BuggySim)
 
 
 def test_mobi_arrival_drains_stranded_zi_melo_orders_under_bug():
@@ -163,6 +175,34 @@ def test_mobi_arrival_drains_stranded_zi_melo_orders_under_bug():
     assert snap["inserted_before"] == 0, snap
     assert snap["pending"] >= 2, snap
     assert snap["inserted_after"] == snap["pending"], snap
+
+
+def test_fixed_sim_steps_once_and_processes_all_same_tick_arrivals():
+    ZI_ID, MOBI_ID, TICK = 0, 1, 50
+    _seed_everything()
+    sim = _build_sim_with_mobi(FixedSim)
+    sim.arrivals = defaultdict(list, {TICK: [ZI_ID]})
+    sim.arrivals_melo = defaultdict(list, {TICK: [MOBI_ID]})
+    sim.time = TICK
+
+    individual_arrivals = len(sim.arrivals[TICK]) + len(sim.arrivals_melo[TICK])
+    arrival_ticks = _arrival_tick_count(sim)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        sim.step()
+
+    assert individual_arrivals == 2
+    assert arrival_ticks == 1
+    assert sim.meloMarket._step_count == arrival_ticks
+    assert sim.meloMarket.event_queue.current_time == TICK + 1
+    assert len(sim.meloMarket.order_book.agent_id_map[ZI_ID]) == 1
+    assert len(sim.meloMarket.order_book.agent_id_map[MOBI_ID]) == 1
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_fixed_sim_step_count_matches_natural_arrival_ticks(seed):
+    sim = _build_and_run(FixedSim, num_zi=2, num_mobi=2, seed=seed)
+    assert sim.meloMarket._step_count == _arrival_tick_count(sim)
 
 
 @pytest.mark.parametrize("seed", SEEDS)

@@ -18,3 +18,7 @@
 .idea
 *.lock
 *.toml
+
+# Pix Agent
+.pi/
+.pi-lens/
