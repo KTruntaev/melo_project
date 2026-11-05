@@ -75,7 +75,12 @@ class MELOSimulatorSampledArrival:
         self.lam_melo_mobi = lam_melo_mobi
         self.lam_melo_zi = lam_melo_zi
 
-        self.arrivals_melo = defaultdict(list)
+        # Wake-up schedule for ALL agents, keyed by tick -> list of agent ids.
+        # This is not M-ELO-specific: every agent (MOBI and ZI) is scheduled
+        # here regardless of which venue it ends up trading. The CDA-vs-M-ELO
+        # choice is made per-arrival inside the agent's act(), not by this
+        # schedule, so an agent that trades CDA still arrives via this dict.
+        self.arrivals = defaultdict(list)
         self.timesteps_melo_updates = defaultdict(lambda: 0)
 
         self.arrivals_sampled = 10000
@@ -107,13 +112,13 @@ class MELOSimulatorSampledArrival:
         self.fundamentals = []
 
         fundamental = LazyGaussianMeanReverting(mean=mean, final_time=sim_time, r=r, shock_var=shock_var)
-        self.market = Market(fundamental=fundamental, time_steps=sim_time)
+        self.cdaMarket = Market(fundamental=fundamental, time_steps=sim_time)
         self.meloMarket = MeloMarket(fundamental, sim_time, self.holding_period)
 
         # All agents are strategic ZIMeloAgents. Agent ids are contiguous and
         # assigned in construction order, so the list index == agent_id.
         self.agents = []
-        self.order_tracker = {}
+        self.melo_order_tracker = {}
         self.profile_order = profile_order  # may be None
 
         # Role mapping for fast lookup of the next-arrival stream in step().
@@ -151,9 +156,9 @@ class MELOSimulatorSampledArrival:
             agent = ZIMeloAgent(
                 agent_id=agent_id,
                 role="MOBI",
-                market=self.market,
+                cdaMarket=self.cdaMarket,
                 meloMarket=self.meloMarket,
-                order_tracker=self.order_tracker,
+                melo_order_tracker=self.melo_order_tracker,
                 q_max=q_max,
                 pv_var=pv_var,
                 shade=agent_shade,
@@ -166,9 +171,9 @@ class MELOSimulatorSampledArrival:
             agent = ZIMeloAgent(
                 agent_id=agent_id,
                 role="ZI",
-                market=self.market,
+                cdaMarket=self.cdaMarket,
                 meloMarket=self.meloMarket,
-                order_tracker=self.order_tracker,
+                melo_order_tracker=self.melo_order_tracker,
                 q_max=q_max,
                 shade=agent_shade,
                 pv_var=pv_var,
@@ -181,7 +186,7 @@ class MELOSimulatorSampledArrival:
 
         self.agents.append(agent)
         self.agent_roles[agent_id] = role_name
-        self.arrivals_melo[first_tick].append(agent_id)
+        self.arrivals[first_tick].append(agent_id)
 
     def _schedule_next_arrival(self, agent_id):
         """Draw and enqueue this agent's next M-ELO wake-up from its role stream."""
@@ -198,7 +203,7 @@ class MELOSimulatorSampledArrival:
                 self.arrival_index_zi = 0
             next_time = self.arrival_times_zi[self.arrival_index_zi].item() + 1 + self.time
             self.arrival_index_zi += 1
-        self.arrivals_melo[next_time].append(agent_id)
+        self.arrivals[next_time].append(agent_id)
 
     def step(self):
         if self.time >= self.sim_time:
@@ -206,28 +211,37 @@ class MELOSimulatorSampledArrival:
             return
 
         self.meloMarket.event_queue.set_time(self.time)
-        self.market.event_queue.set_time(self.time)
+        self.cdaMarket.event_queue.set_time(self.time)
 
-        melo_agents = self.arrivals_melo[self.time]
-        for agent_id in melo_agents:
+        arriving_agents = self.arrivals[self.time]
+        for agent_id in arriving_agents:
             agent: Agent = self.agents[agent_id]
             self.num_orders += 1
+
+            # Clear this agent's resting CDA order BEFORE it prices, so a ZI
+            # agent's eta price-improvement never reads its own stale quote off
+            # the book (restores the pre-refactor ordering). CDA orders carry no
+            # keep logic, so this is always safe; an agent that "keeps" only ever
+            # holds a standing M-ELO order (never a resting CDA order), so nothing
+            # keepable is removed here. The M-ELO withdrawal stays deferred below.
+            self.cdaMarket.withdraw_all(agent_id)
 
             # The agent manages its own orders; the simulator only executes the
             # decision against the books it holds.
             venue, orders = agent.act(self.time)
             if orders:
-                # "Replace": clear this agent's live orders from both books, then
-                # insert the new order into the chosen venue.
-                self.meloMarket.withdraw_all(agent_id, self.order_tracker)
-                self.market.withdraw_all(agent_id)
+                # "Replace": clear the standing M-ELO order (deferred until here
+                # so a "keep" decision — an empty list — leaves it in place), then
+                # insert the new order into the chosen venue. The CDA book was
+                # already cleared above.
+                self.meloMarket.withdraw_all(agent_id, self.melo_order_tracker)
                 if venue == MELO:
                     assert len(orders) == 1
                     self.meloMarket.add_orders(orders)
-                    self.order_tracker[orders[0].order_id] = ""
+                    self.melo_order_tracker[orders[0].order_id] = ""
                     self.melo_orders.append((self.time, orders[0].price, orders[0].order_type))
                 else:
-                    self.market.add_orders(orders)
+                    self.cdaMarket.add_orders(orders)
             # else "keep": standing M-ELO order left untouched.
 
             self._schedule_next_arrival(agent_id)
@@ -238,21 +252,21 @@ class MELOSimulatorSampledArrival:
         # bug) fall back to running only when an agent arrives this tick — the
         # a/b harness sets this flag to reproduce the bug. Kept before the CDA
         # market.step() below so insert() sees the same pre-step midpoint.
-        if getattr(self, 'melo_step_every_tick', True) or melo_agents:
-            order_placement = self.meloMarket.step(self.order_tracker, self.market.order_book.midprice)
+        if getattr(self, 'melo_step_every_tick', True) or arriving_agents:
+            order_placement = self.meloMarket.step(self.melo_order_tracker, self.cdaMarket.order_book.midprice)
             if order_placement != -1:
                 self.timesteps_melo_updates[order_placement + self.holding_period] = 1
 
         # Process CDA market orders
-        prev_midpoint = self.market.order_book.midprice
-        new_orders = self.market.step()
-        current_midpoint = self.market.order_book.midprice
+        prev_midpoint = self.cdaMarket.order_book.midprice
+        new_orders = self.cdaMarket.step()
+        current_midpoint = self.cdaMarket.order_book.midprice
         if not math.isnan(current_midpoint):
-            if math.isnan(prev_midpoint) or not math.isclose(self.market.order_book.midprice, prev_midpoint, rel_tol=1e-5):
-                order_updated = self.meloMarket.order_book.update_eligiblity_queue(self.time, self.order_tracker, current_midpoint)
+            if math.isnan(prev_midpoint) or not math.isclose(self.cdaMarket.order_book.midprice, prev_midpoint, rel_tol=1e-5):
+                order_updated = self.meloMarket.order_book.update_eligiblity_queue(self.time, self.melo_order_tracker, current_midpoint)
                 if order_updated != -1:
                     self.timesteps_melo_updates[order_updated + self.holding_period] = 1
-            melo_new_orders = self.meloMarket.order_book.matching_orders(self.time, self.order_tracker, current_midpoint)
+            melo_new_orders = self.meloMarket.order_book.matching_orders(self.time, self.melo_order_tracker, current_midpoint)
             self.record_melo_trade(melo_new_orders)
 
         for matched_order in new_orders:
@@ -267,8 +281,8 @@ class MELOSimulatorSampledArrival:
             self.agents[agent_id].update_position(quantity, cash)
 
     def update_melo_market(self):
-        self.meloMarket.order_book.update_active_queue(self.time, self.order_tracker)
-        new_orders = self.meloMarket.order_book.matching_orders(self.time, self.order_tracker, self.market.order_book.midprice)
+        self.meloMarket.order_book.update_active_queue(self.time, self.melo_order_tracker)
+        new_orders = self.meloMarket.order_book.matching_orders(self.time, self.melo_order_tracker, self.cdaMarket.order_book.midprice)
         self.record_melo_trade(new_orders)
         return
 
@@ -287,7 +301,7 @@ class MELOSimulatorSampledArrival:
         return
 
     def end_sim(self):
-        fundamental_val = self.market.get_final_fundamental()
+        fundamental_val = self.cdaMarket.get_final_fundamental()
         values = {}
         positions = {}
 
@@ -343,19 +357,19 @@ class MELOSimulatorSampledArrival:
 
     def run(self):
         for t in range(self.sim_time):
-            if self.arrivals_melo[t]:
+            if self.arrivals[t]:
                 try:
                     self.step()
                 except KeyError:
-                    print(self.arrivals_melo[self.time])
-                    return self.market, self.meloMarket
+                    print(self.arrivals[self.time])
+                    return self.cdaMarket, self.meloMarket
 
             if self.timesteps_melo_updates[t] != 0:
                 self.update_melo_market()
 
-            self.fundamentals.append(self.market.get_fundamental_value())
-            self.best_buys.append(self.market.order_book.get_best_bid())
-            self.best_asks.append(self.market.order_book.get_best_ask())
+            self.fundamentals.append(self.cdaMarket.get_fundamental_value())
+            self.best_buys.append(self.cdaMarket.order_book.get_best_bid())
+            self.best_asks.append(self.cdaMarket.order_book.get_best_ask())
             self.fundamental_estimates.append(self.agents[0].estimate_fundamental())
 
             # Record mid-quote for this timestep if both sides non-empty, else NaN.

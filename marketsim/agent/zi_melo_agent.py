@@ -44,12 +44,12 @@ ZI = "ZI"
 class ZIMeloAgent(Agent):
     def __init__(self,
                  agent_id: int,
-                 market: Market,
+                 cdaMarket: Market,
                  role: str = ZI,
                  meloMarket: Market = None,
-                 order_tracker=None,
-                 q_max: int = 10,
-                 pv_var: float = 5e6,
+                 melo_order_tracker=None,
+                 q_max: int = 10, # Max position size
+                 pv_var: float = 5e6, # Used to generate pv vector
                  shade: List = None,
                  cda_proportion: float = 0.5,
                  melo_proportion: float = 0.5,
@@ -61,9 +61,9 @@ class ZIMeloAgent(Agent):
         self.role = role
 
         self.agent_id = agent_id
-        self.market = market
+        self.cdaMarket = cdaMarket
         self.meloMarket = meloMarket
-        self.order_tracker = order_tracker
+        self.melo_order_tracker = melo_order_tracker
         self.q_max = q_max
         self.pv_var = pv_var
         self.shade = shade if shade is not None else [0, 0]
@@ -81,7 +81,6 @@ class ZIMeloAgent(Agent):
         # Shared position/cash bookkeeping (payoff uses position*fund + cash).
         self.position = 0
         self.cash = 0
-        self.melo_profit = 0
 
         # Position-based private values (used for ZI pricing/payoff; harmless
         # to construct for MOBI, whose payoff uses melo_pv_history instead).
@@ -104,7 +103,7 @@ class ZIMeloAgent(Agent):
         self.melo_orders_encountered = 0
         # Each entry: (time, reason, queue_status_at_removal). reason is one of
         # "redirected_to_cda", "min_surplus_violated". queue_status is whatever
-        # order_tracker recorded for the order just before withdrawal
+        # melo_order_tracker recorded for the order just before withdrawal
         # ("eligibility", "activation", "active", or None if unknown).
         self.melo_removal_log = []
 
@@ -118,21 +117,20 @@ class ZIMeloAgent(Agent):
         return f'ZI{self.agent_id}'
 
     def generate_pv(self):
-        # Regenerate position-based private values. MOBI never relied on this
-        # (its original was a no-op); kept here for the ZI role and external
-        # callers that refresh PVs between episodes.
-        if self.role == ZI:
-            self.pv = PrivateValues(self.q_max, self.pv_var)
-
-    def generate_melo_pv(self):
-        # MOBI draws a fresh scalar private value on each arrival; ZI does not.
+        # Refresh this agent's private value(s) on arrival, dispatching on role:
+        # MOBI draws a fresh scalar meloPV each arrival; ZI regenerates its
+        # position-based PrivateValues. In the arrival hot path only MOBI calls
+        # this (ZI's PVs are fixed per episode, set at construction/reset), but
+        # the single role switch keeps it correct for any caller.
         if self.role == MOBI:
             self.meloPV = torch.randn(1) * torch.sqrt(torch.tensor(self.pv_var))
+        else:  # ZI
+            self.pv = PrivateValues(self.q_max, self.pv_var)
 
     def estimate_fundamental(self):
-        mean, r, T = self.market.get_info()
-        t = self.market.get_time()
-        val = self.market.get_fundamental_value()
+        mean, r, T = self.cdaMarket.get_info()
+        t = self.cdaMarket.get_time()
+        val = self.cdaMarket.get_fundamental_value()
 
         rho = (1 - r) ** (T - t)
 
@@ -160,11 +158,11 @@ class ZIMeloAgent(Agent):
         # the queue status seen at drop time, the removed counter, the removal
         # log, and clearing the cached standing order.
         queue_status = None
-        if self.order_tracker is not None and self.melo_order is not None:
-            queue_status = self.order_tracker.get(self.melo_order.order_id)
+        if self.melo_order_tracker is not None and self.melo_order is not None:
+            queue_status = self.melo_order_tracker.get(self.melo_order.order_id)
 
         self.melo_orders_removed += 1
-        self.melo_removal_log.append((self.market.get_time(), reason, queue_status))
+        self.melo_removal_log.append((self.cdaMarket.get_time(), reason, queue_status))
         self.melo_order = None
 
     # ------------------------------------------------------------------
@@ -198,12 +196,12 @@ class ZIMeloAgent(Agent):
         return self._take_action_zi(side, market)
 
     def _take_action_mobi(self, side, market) -> List[Order]:
-        t = self.market.get_time()
+        t = self.cdaMarket.get_time()
         # Arrival process: drop any standing M-ELO order before resubmitting.
         # MOBI agents have no keep logic (paper §3.1).
         if self.melo_order is not None:
             self.withdraw_melo_order(reason="mobi_resubmit")
-        self.generate_melo_pv()
+        self.generate_pv()
 
         price = self.estimate_fundamental() + self.meloPV
 
@@ -255,12 +253,12 @@ class ZIMeloAgent(Agent):
         if self.eta != 1.0:
             if side == BUY:
                 surplus = price - estimate
-                best_price = self.market.order_book.get_best_ask()
+                best_price = self.cdaMarket.order_book.get_best_ask()
                 if (price - best_price) > self.eta * surplus and best_price != np.inf:
                     price = best_price
             else:
                 surplus = estimate - price
-                best_price = self.market.order_book.get_best_bid()
+                best_price = self.cdaMarket.order_book.get_best_bid()
                 if (best_price - price) > self.eta * surplus and best_price != np.inf:
                     price = best_price
 
@@ -268,7 +266,7 @@ class ZIMeloAgent(Agent):
             price=price,
             quantity=self.order_quantity,
             agent_id=self.get_id(),
-            time=self.market.get_time(),
+            time=self.cdaMarket.get_time(),
             order_type=side,
             order_id=random.randint(1, 10000000),
         )
@@ -306,7 +304,6 @@ class ZIMeloAgent(Agent):
     def reset(self):
         self.position = 0
         self.cash = 0
-        self.melo_profit = 0
         self.pv = PrivateValues(self.q_max, self.pv_var)
         self.melo_order = None
         # MOBI PV state
