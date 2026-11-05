@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, Counter
 from marketsim.simulator.melo_simulator import MELOSimulatorSampledArrival
 from tqdm import tqdm
 from agent.agent import Agent
@@ -19,6 +19,10 @@ cum_removed_activation = []
 cum_removed_active = []
 cum_fundamental_estimates = []
 cum_num_orders = []
+cum_zi_orders_placed = []
+cum_zi_orders_removed = []
+zi_removal_reasons = Counter()  # reason -> count, aggregated across all reps
+zi_removal_queues = Counter()   # queue the order was in at removal time -> count
 positions = defaultdict(float)
 remaining_orders = []
 REPS = 50
@@ -41,10 +45,17 @@ for _ in tqdm(range(REPS)):
                                       pv_var=5e6,
                                       shade=[10,30])
     sim.run()
-    payoffs, positions_run, best_buy, best_ask, melo_trade, hbl_trades, buy_cancelled, sell_cancelled, elig, activation, active, melo_orders, fundamental_estimates, num_orders_placed, elig, activation, active= sim.end_sim()  # Dictionary {agent_id: payoff}
+    (payoffs, positions_run, best_buy, best_ask, midpoints, melo_trade, hbl_trades,
+     buy_cancelled, sell_cancelled, removed_eligibility, removed_activation, removed_active,
+     melo_orders, fundamental_estimates, num_orders_placed, elig, activation, active,
+     zi_orders_placed, zi_orders_removed, zi_removal_log) = sim.end_sim()  # Dictionary {agent_id: payoff}
     fundamentals.append(sim.fundamentals)
     cum_fundamental_estimates.append(fundamental_estimates)
     cum_num_orders.append(num_orders_placed)
+    cum_zi_orders_placed.append(zi_orders_placed)
+    cum_zi_orders_removed.append(zi_orders_removed)
+    zi_removal_reasons.update(reason for (_, _, reason, _) in zi_removal_log)
+    zi_removal_queues.update(queue_status for (_, _, _, queue_status) in zi_removal_log)
     midpoint_prices = (np.array(best_buy) + np.array(best_ask)) / 2
     remaining_orders.append(elig + activation + active)
 
@@ -201,6 +212,11 @@ print("AVG REMOVED FROM ACTIVATION", np.mean(cum_removed_activation))
 print("AVG REMOVED FROM ACTIVE", np.mean(cum_removed_active))
 print("AVG REMAINING IN QUEUES", np.mean(remaining_orders))
 print("AVG NUM ORDERS PLACED", np.mean(cum_num_orders))
+
+print("AVG ZI MELO ORDERS PLACED", np.mean(cum_zi_orders_placed))
+print("AVG ZI MELO ORDERS REMOVED", np.mean(cum_zi_orders_removed))
+print("ZI REMOVAL REASONS (summed across reps)", dict(zi_removal_reasons))
+print("ZI REMOVAL QUEUE AT TIME OF REMOVAL (summed across reps)", dict(zi_removal_queues))
 
 averaged_fundamentals = np.mean(fundamentals, axis=0)
 cum_avg_fundamentals = np.mean(cum_fundamental_estimates, axis=0)

@@ -243,16 +243,15 @@ def test_holding_period_propagation_melo_simulator():
     HP = 91  # eye-catching value to trace
 
     sim = MELOSim(
-        num_background_agents=0,
         sim_time=1,
-        num_zi=0,
-        num_hbl=0,
-        num_strategic=0,
-        strategies=[], strategy_counts={}, strategy_params={},
-        lam=1e-3, mean=1000, r=0.0, shock_var=1.0,
+        profile_order=[("MOBI", "MOBI_0_100_shade0_0")],
+        strategy_params={
+            "MOBI_0_100_shade0_0": {"cda_proportion": 0.0, "melo_proportion": 1.0, "shade": [10, 30]},
+        },
+        mean=1000, r=0.0, shock_var=1.0,
         q_max=1, pv_var=1.0, shade=[10, 30],
         holding_period=HP,
-        lam_r=1e-3, lam_melo=1e-4,
+        lam_melo_mobi=1e-4, lam_melo_zi=1e-4,
     )
 
     # 1) top-level simulator keeps the value

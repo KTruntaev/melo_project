@@ -149,29 +149,19 @@ class ZIMeloAgent(Agent):
         # The standing order still achieves the minimum required surplus Rmin
         # (self.shade[0]) against the current fundamental estimate.
         if self.melo_order.order_type == BUY:
-            has_surplus = self.melo_order.price <= estimate - self.shade[0]
-        else:
-            has_surplus = self.melo_order.price >= estimate + self.shade[0]
-
-        if not has_surplus:
-            side_str = "BUY" if self.melo_order.order_type == BUY else "SELL"
-            print(f"Removed order type {side_str} with price {self.melo_order.price} "
-                  f"because private value is {estimate} and rmin is {self.shade[0]}")
-
-        return has_surplus
+            return self.melo_order.price <= estimate - self.shade[0]
+        return self.melo_order.price >= estimate + self.shade[0]
 
     def withdraw_melo_order(self, reason="unspecified"):
-        # Look up which queue the order sat in (eligibility/activation/active/
-        # other) before withdrawal, for the removal log below. Only ZI agents
-        # carry an order_tracker; MOBI passes None, in which case (matching the
-        # original MeloAgent) the market withdrawal is a no-op and the simulator
-        # is responsible for clearing the book before take_action.
+        # Record that the agent is dropping its standing M-ELO order. The
+        # simulator owns the order books and performs the actual removal (it
+        # withdraws this agent's live orders from both books whenever ``act``
+        # hands it a new order); this only updates the agent's own bookkeeping:
+        # the queue status seen at drop time, the removed counter, the removal
+        # log, and clearing the cached standing order.
         queue_status = None
         if self.order_tracker is not None and self.melo_order is not None:
             queue_status = self.order_tracker.get(self.melo_order.order_id)
-
-        if self.meloMarket is not None and self.order_tracker is not None:
-            self.meloMarket.withdraw_all(self.agent_id, self.order_tracker)
 
         self.melo_orders_removed += 1
         self.melo_removal_log.append((self.market.get_time(), reason, queue_status))
@@ -180,6 +170,28 @@ class ZIMeloAgent(Agent):
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
+    def act(self, time: int = None):
+        """Decide what to do with this agent's orders on arrival.
+
+        This is the single entry point the simulator calls each time the agent
+        wakes up. The agent chooses a venue (M-ELO or CDA) and a side, then
+        manages its standing order through the role-specific logic below, and
+        returns ``(venue, orders)``:
+
+          * a non-empty ``orders`` list  → "replace": the simulator withdraws
+            this agent's live orders from both books and inserts ``orders`` into
+            ``venue``.
+          * an empty ``orders`` list      → "keep": the simulator leaves the
+            books untouched (used by the ZI keep logic).
+
+        The division of labour is deliberate: the *agent* manages its orders,
+        the *simulator* steps and holds the markets.
+        """
+        venue = MELO if random.random() < self.melo_proportion else CDA
+        side = random.choice([BUY, SELL])
+        orders = self.take_action(side, venue)
+        return venue, orders
+
     def take_action(self, side, market=CDA, seed=0) -> List[Order]:
         if self.role == MOBI:
             return self._take_action_mobi(side, market)
@@ -187,10 +199,10 @@ class ZIMeloAgent(Agent):
 
     def _take_action_mobi(self, side, market) -> List[Order]:
         t = self.market.get_time()
-        # Arrival process: withdraw any standing M-ELO order before resubmitting.
+        # Arrival process: drop any standing M-ELO order before resubmitting.
         # MOBI agents have no keep logic (paper §3.1).
         if self.melo_order is not None:
-            self.withdraw_melo_order()
+            self.withdraw_melo_order(reason="mobi_resubmit")
         self.generate_melo_pv()
 
         price = self.estimate_fundamental() + self.meloPV
@@ -211,8 +223,9 @@ class ZIMeloAgent(Agent):
             order_type=side,
             order_id=random.randint(1, 10000000),  # TODO: change to a trackable id
         )
-        if market == MELO:
-            self.melo_order = order
+        # Cache the standing order only while it lives in M-ELO; a CDA order
+        # leaves no standing M-ELO order (the simulator clears the book).
+        self.melo_order = order if market == MELO else None
         return [order]
 
     def _take_action_zi(self, side, market) -> List[Order]:
@@ -225,9 +238,6 @@ class ZIMeloAgent(Agent):
         if self.melo_order is not None:
             self.melo_orders_encountered += 1
             if market == CDA:
-                side_str = "BUY" if self.melo_order.order_type == BUY else "SELL"
-                print(f"Removed order type {side_str} with price {self.melo_order.price} "
-                      f"because agent was redirected to the CDA market")
                 self.withdraw_melo_order(reason="redirected_to_cda")
             elif not self.melo_order_has_min_surplus(estimate):
                 self.withdraw_melo_order(reason="min_surplus_violated")

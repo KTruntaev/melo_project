@@ -32,6 +32,18 @@ class ZIAgent(Agent):
         # Standing MELO order (at most one; None when no live MELO order)
         self.melo_order = None
 
+        # --- MELO order placement/removal tracking (for testing/debugging) ---
+        self.melo_orders_placed = 0
+        self.melo_orders_removed = 0
+        # Times take_action saw a standing MELO order on arrival (the case the
+        # keep/withdraw logic acts on). kept = encountered - removed.
+        self.melo_orders_encountered = 0
+        # Each entry: (time, reason, queue_status_at_removal). reason is one of
+        # "redirected_to_cda", "min_surplus_violated" (see take_action); queue_status
+        # is whatever order_tracker had recorded for the order just before withdrawal
+        # (e.g. "eligibility", "activation", "active", or None if unknown).
+        self.melo_removal_log = []
+
         #In case we want the agent to act different based on the market
         self.cda_proportion = cda_proportion
         self.melo_proportion = melo_proportion
@@ -85,13 +97,29 @@ class ZIAgent(Agent):
         # The standing order still achieves the minimum required surplus Rmin
         # (self.shade[0]) against the current fundamental estimate
         if self.melo_order.order_type == BUY:
-            return self.melo_order.price <= estimate - self.shade[0]
+            has_surplus = self.melo_order.price <= estimate - self.shade[0]
         else:
-            return self.melo_order.price >= estimate + self.shade[0]
+            has_surplus = self.melo_order.price >= estimate + self.shade[0]
 
-    def withdraw_melo_order(self):
+        if not has_surplus:
+            side_str = "BUY" if self.melo_order.order_type == BUY else "SELL"
+            print(f"Removed order type {side_str} with price {self.melo_order.price} "
+                  f"because private value is {estimate} and rmin is {self.shade[0]}")
+
+        return has_surplus
+
+    def withdraw_melo_order(self, reason="unspecified"):
+        # Look up which queue the order was sitting in (eligibility/activation/
+        # active/other) before it is withdrawn, for the removal log below
+        queue_status = None
+        if self.order_tracker is not None and self.melo_order is not None:
+            queue_status = self.order_tracker.get(self.melo_order.order_id)
+
         if self.meloMarket is not None:
             self.meloMarket.withdraw_all(self.agent_id, self.order_tracker)
+
+        self.melo_orders_removed += 1
+        self.melo_removal_log.append((self.market.get_time(), reason, queue_status))
         self.melo_order = None
 
     def take_action(self, side, market = CDA, seed = 0):
@@ -102,8 +130,14 @@ class ZIAgent(Agent):
         # minimum surplus; withdraw it when redirected to CDA or the fundamental
         # estimate has moved against it
         if self.melo_order is not None:
-            if market == CDA or not self.melo_order_has_min_surplus(estimate):
-                self.withdraw_melo_order()
+            self.melo_orders_encountered += 1
+            if market == CDA:
+                side_str = "BUY" if self.melo_order.order_type == BUY else "SELL"
+                print(f"Removed order type {side_str} with price {self.melo_order.price} "
+                      f"because agent was redirected to the CDA market")
+                self.withdraw_melo_order(reason="redirected_to_cda")
+            elif not self.melo_order_has_min_surplus(estimate):
+                self.withdraw_melo_order(reason="min_surplus_violated")
             else:
                 return []
 
@@ -146,6 +180,7 @@ class ZIAgent(Agent):
 
         if market == MELO:
             self.melo_order = order
+            self.melo_orders_placed += 1
 
         return [order]
 
@@ -167,3 +202,7 @@ class ZIAgent(Agent):
         self.cash = 0
         self.pv = PrivateValues(self.q_max, self.pv_var)
         self.melo_order = None
+        self.melo_orders_placed = 0
+        self.melo_orders_removed = 0
+        self.melo_orders_encountered = 0
+        self.melo_removal_log = []

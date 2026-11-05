@@ -27,7 +27,8 @@ class MeloAgent(Agent):
                 shade: List = [0,0],
                 cda_proportion: float = 0.5,
                 melo_proportion: float = 0.5,
-                order_quantity: int = 5):
+                order_quantity: int = 5,
+                order_tracker=None):
         """
         Initialize a MELO agent.
         
@@ -45,6 +46,9 @@ class MeloAgent(Agent):
         self.market = market
         self.shade = shade
         self.meloMarket = meloMarket
+        self.order_tracker = order_tracker
+        # Standing M-ELO order (at most one live at a time; None when none outstanding)
+        self.melo_order = None
         self.q_max = q_max
         self.pv_var = pv_var
         self.cda_proportion = cda_proportion
@@ -91,8 +95,19 @@ class MeloAgent(Agent):
         return estimate
         # return estimate + np.random.normal(0, np.sqrt(3e5))
 
+    def withdraw_melo_order(self, reason="unspecified"):
+        """Sibling of ZIAgent.withdraw_melo_order: remove this agent's standing
+        M-ELO order(s) from the M-ELO book and clear the local handle. MOBI agents
+        have no keep logic, so they always withdraw-and-resubmit (paper §3.1)."""
+        if self.meloMarket is not None and self.order_tracker is not None:
+            self.meloMarket.withdraw_all(self.agent_id, self.order_tracker)
+        self.melo_order = None
+
     def take_action(self, side: bool, market) -> List[Order]:
         t = self.market.get_time()
+        # Arrival process: withdraw any standing M-ELO order before resubmitting.
+        if self.melo_order is not None:
+            self.withdraw_melo_order()
         self.generate_melo_pv()
         # print("ACTION WAS TAKEN AT TIME ",t, " by agent, ", self.agent_id, "at PV: ", self.meloPV )
         # if side == BUY:
@@ -111,7 +126,7 @@ class MeloAgent(Agent):
             else:
                 price += valuation_offset
         
-        order = Order(  
+        order = Order(
             price=price.item(),
             quantity=5,
             agent_id=self.get_id(),
@@ -119,6 +134,8 @@ class MeloAgent(Agent):
             order_type=side,
             order_id=random.randint(1, 10000000) # TODO: change to a trackable id
         )
+        if market == MELO:
+            self.melo_order = order
         return [order]
 
     def record_trade(self, side, quantity) -> None:
@@ -133,6 +150,7 @@ class MeloAgent(Agent):
     def update_position(self, q, p):
         self.position += q
         self.cash += p
+        self.melo_order = None  # a fill clears the standing order handle
 
     def __str__(self):
         return f'ZI{self.agent_id}'

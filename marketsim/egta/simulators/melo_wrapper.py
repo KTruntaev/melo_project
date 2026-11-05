@@ -8,8 +8,6 @@ from typing import Dict, List, Tuple, Any, Optional, Union
 from tqdm import tqdm
 from marketsim.egta.simulators.base import Simulator
 from marketsim.simulator.melo_simulator import MELOSimulatorSampledArrival
-from marketsim.agent.zero_intelligence_agent import ZIAgent
-from marketsim.agent.melo_agent import MeloAgent
 from marketsim.fourheap.constants import BUY, SELL
 import concurrent.futures as cf 
 import torch
@@ -73,11 +71,10 @@ def _run_melo_single_rep(arg):
     # Run one MELO repetition (suppress verbose per-rep logging)
     sim = MELOSimulatorSampledArrival(**sim_kwargs)
     sim.run()
-   
-    results_tuple = sim.end_sim()
-    raw_values = results_tuple[0] # payoff dict keyed by agent id -> number/torch.Tensor
-  
-    midpoints  = results_tuple[4]      
+
+    results = sim.end_sim()
+    raw_values = results["payoffs"]  # payoff dict keyed by agent id -> number/torch.Tensor
+    midpoints = results["midpoints"]
 
 
     import numpy as _np
@@ -338,16 +335,18 @@ class MeloSimulator(Simulator):
         # --------------------------------------------------------------
         # 2)  Spawn repetitions (parallel or serial)
         # --------------------------------------------------------------
+        # Background agents no longer exist in the M-ELO simulator; every agent
+        # is strategic. These wrapper params are retained for API compatibility
+        # but must be zero.
         num_background = self.num_background_zi + self.num_background_hbl
+        if num_background:
+            raise ValueError(
+                "Background agents were removed from the M-ELO simulator; "
+                f"got num_background_zi={self.num_background_zi}, "
+                f"num_background_hbl={self.num_background_hbl} (both must be 0)."
+            )
         base_kwargs = dict(
-            num_background_agents=num_background,
             sim_time=self.sim_time,
-            num_zi=self.num_background_zi,
-            num_hbl=self.num_background_hbl,
-            num_strategic=self.get_num_players(),
-            num_assets=self.num_assets,
-            lam=self.lam,
-            lam_melo=self.lam_melo,
             mean=self.mean,
             r=self.r,
             shock_var=self.shock_var,
@@ -355,7 +354,6 @@ class MeloSimulator(Simulator):
             pv_var=self.pv_var,
             shade=self.shade,
             eta=self.eta,
-            lam_r=self.lam_r,
             holding_period=self.holding_period,
             lam_melo_mobi=self.lam_melo_mobi,
             lam_melo_zi=self.lam_melo_zi,

@@ -65,8 +65,6 @@ def test_wrapper_forwards_per_role_lambda(monkeypatch):
 
     assert captured_kwargs["lam_melo_mobi"] == pytest.approx(1e-4)
     assert captured_kwargs["lam_melo_zi"] == pytest.approx(9e-4)
-    # Legacy key should still be present for compatibility
-    assert "lam_melo" in captured_kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -76,19 +74,13 @@ def test_wrapper_forwards_per_role_lambda(monkeypatch):
 def test_arrival_streams_separated():
     rs_counts = {"MOBI": {"MOBI_0_100_shade0_0": 1}, "ZI": {"ZI_100_0_shade250_500": 1}}
     sim = MELOSimulatorSampledArrival(
-        num_background_agents=0,
         sim_time=1,
-        num_zi=0,
-        num_hbl=0,
-        num_strategic=2,
         role_strategy_counts=rs_counts,
         role_names=["MOBI", "ZI"],
         strategy_params={
             "MOBI_0_100_shade0_0": {"cda_proportion": 0.0, "melo_proportion": 1.0, "shade": [0, 0]},
             "ZI_100_0_shade250_500": {"cda_proportion": 1.0, "melo_proportion": 0.0, "shade": [250, 500]},
         },
-        lam=1e-2,
-        lam_r=1e-2,
         lam_melo_mobi=1e-4,
         lam_melo_zi=9e-4,
     )
@@ -107,29 +99,8 @@ def test_arrival_streams_separated():
 
 
 # ---------------------------------------------------------------------------
-# Test 3: Legacy lam_melo fallback applies when per-role args omitted
+# (Removed) Test 3: Legacy single-`lam_melo` fallback.
+# The single-stream `lam_melo` parameter and its None-fallback to the per-role
+# rates were purged from the M-ELO simulator; per-role `lam_melo_mobi` /
+# `lam_melo_zi` are now the only arrival rates, so there is no fallback to test.
 # ---------------------------------------------------------------------------
-
-def test_legacy_single_lambda():
-    rs_counts = {"MOBI": {"MOBI_0_100_shade0_0": 1}, "ZI": {}}
-    legacy_val = 5e-4
-    sim = MELOSimulatorSampledArrival(
-        num_background_agents=0,
-        sim_time=1,
-        num_zi=0,
-        num_hbl=0,
-        num_strategic=1,
-        role_strategy_counts=rs_counts,
-        role_names=["MOBI", "ZI"],
-        strategy_params={
-            "MOBI_0_100_shade0_0": {"cda_proportion": 0.0, "melo_proportion": 1.0, "shade": [0, 0]}
-        },
-        lam=1e-2,
-        lam_r=1e-2,
-        lam_melo=legacy_val,
-        lam_melo_mobi=None,
-        lam_melo_zi=None,
-    )
-
-    assert sim.lam_melo_mobi == pytest.approx(legacy_val)
-    assert sim.lam_melo_zi == pytest.approx(legacy_val) 
