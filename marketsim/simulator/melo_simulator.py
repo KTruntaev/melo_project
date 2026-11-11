@@ -4,6 +4,7 @@ from marketsim.market.market import Market
 from marketsim.market.melo_market import MeloMarket
 from marketsim.fundamental.lazy_mean_reverting import LazyGaussianMeanReverting
 from marketsim.agent.zi_melo_agent import ZIMeloAgent
+from marketsim.agent.mobi_melo_agent import MobiMeloAgent
 import torch.distributions as dist
 import torch
 import math
@@ -153,9 +154,8 @@ class MELOSimulatorSampledArrival:
         agent_shade = params.get("shade", shade)
 
         if role_name == "MOBI":
-            agent = ZIMeloAgent(
+            agent = MobiMeloAgent(
                 agent_id=agent_id,
-                role="MOBI",
                 cdaMarket=self.cdaMarket,
                 meloMarket=self.meloMarket,
                 melo_order_tracker=self.melo_order_tracker,
@@ -170,7 +170,6 @@ class MELOSimulatorSampledArrival:
         else:  # ZI role
             agent = ZIMeloAgent(
                 agent_id=agent_id,
-                role="ZI",
                 cdaMarket=self.cdaMarket,
                 meloMarket=self.meloMarket,
                 melo_order_tracker=self.melo_order_tracker,
@@ -314,10 +313,8 @@ class MELOSimulatorSampledArrival:
 
         for agent_id in range(len(self.agents)):
             agent = self.agents[agent_id]
-            if agent.role == "MOBI":
-                values[agent_id] = agent.position * fundamental_val + agent.cash + sum(quantity * value for quantity, value in agent.melo_pv_history)
-            else:
-                values[agent_id] = agent.get_pos_value() + agent.position * fundamental_val + agent.cash
+            # Valuation is role-specific; each agent subclass computes its own.
+            values[agent_id] = agent.final_value(fundamental_val)
             positions[agent_id] = agent.position
             if agent.role == "ZI":
                 self.zi_orders_placed += agent.melo_orders_placed

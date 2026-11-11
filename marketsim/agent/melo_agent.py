@@ -1,318 +1,184 @@
 """
-MELO Agent that can allocate trading between CDA and MELO markets.
+Shared parent for the two strategic M-ELO/CDA agent types.
+
+``MeloAgent`` holds everything the MOBI and ZI roles have in common — identity,
+the fundamental-value estimate, position/cash bookkeeping, the per-arrival
+``act()`` scaffolding, and the standing M-ELO order lifecycle (keep/withdraw
+bookkeeping). The two subclasses supply the *valuation logic* that distinguishes
+the roles:
+
+  * :class:`~marketsim.agent.mobi_melo_agent.MobiMeloAgent` (MOBI, large-lot):
+    a fresh scalar private value (``meloPV``) each arrival, booked per fill into
+    ``melo_pv_history``; price = estimate + meloPV (shade on CDA only); always
+    resubmits; payoff values each trade at the PV seen when it traded.
+  * :class:`~marketsim.agent.zi_melo_agent.ZIMeloAgent` (ZI, small-lot):
+    position-based ``PrivateValues``; price = estimate + marginal PV ± shade
+    (optional ``eta`` shading); keeps a standing M-ELO order while it still
+    clears R_min; payoff uses ``get_pos_value()``.
+
+Both subclasses are plain ``MeloAgent`` instances to the simulator, which keeps
+them together in a single arrivals/agents list and routes wake-ups by role via
+``agent_roles`` (``lam_melo_mobi`` vs ``lam_melo_zi``).
 """
 import random
-import numpy as np
+from typing import List
 from marketsim.agent.agent import Agent
 from marketsim.market.market import Market
-from marketsim.fourheap.order import Order
 from marketsim.private_values.private_values import PrivateValues
 from marketsim.fourheap.constants import BUY, SELL, CDA, MELO
-from typing import List, Optional, Dict, Any, Tuple
-import torch
-import math
 
 
 class MeloAgent(Agent):
-    """
-    MELO Agent that can trade in both CDA and MELO markets with specific allocation proportions.
-    """
-    
-    def __init__(self, 
-                agent_id: int,
-                market: Market,
-                meloMarket: Market = None,
-                q_max: int = 10,
-                pv_var: float = 5e6,
-                shade: List = [0,0],
-                cda_proportion: float = 0.5,
-                melo_proportion: float = 0.5,
-                order_quantity: int = 5,
-                order_tracker=None):
-        """
-        Initialize a MELO agent.
-        
-        Args:
-            agent_id: Agent ID
-            market: CDA market instance
-            meloMarket: MELO market instance
-            q_max: Maximum inventory quantity
-            pv_var: Private value variance
-            cda_proportion: Proportion of trades allocated to CDA market
-            melo_proportion: Proportion of trades allocated to MELO market
-            order_quantity: Fixed quantity for orders
-        """
+    #: Role tag ("MOBI"/"ZI"); set by each subclass. The simulator reads it to
+    #: pick the arrival stream and to gate role-specific booking.
+    role = None
+    #: Default order size when the caller does not override order_quantity.
+    default_order_quantity = 1
+
+    def __init__(self,
+                 agent_id: int,
+                 cdaMarket: Market,
+                 meloMarket: Market = None,
+                 melo_order_tracker=None,
+                 q_max: int = 10,                 # Max position size
+                 pv_var: float = 5e6,             # Variance used to draw private values
+                 shade: List = None,
+                 cda_proportion: float = 0.5,
+                 melo_proportion: float = 0.5,
+                 order_quantity: int = None,
+                 eta: float = 1.0):
         self.agent_id = agent_id
-        self.market = market
-        self.shade = shade
+        self.cdaMarket = cdaMarket
         self.meloMarket = meloMarket
-        self.order_tracker = order_tracker
-        # Standing M-ELO order (at most one live at a time; None when none outstanding)
-        self.melo_order = None
+        self.melo_order_tracker = melo_order_tracker
         self.q_max = q_max
         self.pv_var = pv_var
+        self.shade = shade if shade is not None else [0, 0]
+        self.eta = eta
         self.cda_proportion = cda_proportion
         self.melo_proportion = melo_proportion
-        self.order_quantity = order_quantity
-        
-        # Initialize inventory and cash
-        self.inventory = 0
-        self.cash = 0
-        self.melo_profit = 0
-        
-        # Track orders
-        self.active_orders = {}
-        
-        #Rand generated on entry
-        self.meloPV = 0
+        self.order_quantity = (order_quantity if order_quantity is not None
+                               else self.default_order_quantity)
+
+        # Shared position/cash bookkeeping (payoff uses position*fund + cash).
         self.position = 0
-        self.meloPosition = 0
-        self.melo_profit = 0
-        self.melo_pv_history = []
+        self.cash = 0
+
+        # Position-based private values. Constructed for BOTH roles (MOBI's
+        # payoff uses meloPV instead, but the draw must still happen to keep the
+        # RNG stream — and therefore payoffs — identical across roles).
         self.pv = PrivateValues(q_max, pv_var)
 
+        # Standing M-ELO order (at most one live at a time; None when none out).
+        self.melo_order = None
+
+        # M-ELO order placement/removal tracking. withdraw_melo_order updates
+        # these for either role; end_sim only aggregates them for ZI.
+        self.melo_orders_placed = 0
+        self.melo_orders_removed = 0
+        self.melo_orders_encountered = 0   # standing-order arrivals (kept = encountered - removed)
+        self.melo_removal_log = []         # (time, reason, queue_status_at_removal)
+
+        self._init_role_state()
+
+    # ------------------------------------------------------------------
+    # Hooks the subclasses fill in
+    # ------------------------------------------------------------------
+    def _init_role_state(self):
+        """Set up any role-specific private-value state (no-op by default)."""
+
+    def _reset_role_state(self):
+        """Reset any role-specific private-value state (no-op by default)."""
+
     def generate_pv(self):
-        #Generate new private values
-        # self.pv = PrivateValues(self.q_max, self.pv_var)
-        pass
+        """Refresh this agent's private value(s) on arrival (role-specific)."""
+        raise NotImplementedError
 
-    def generate_melo_pv(self):
-        self.meloPV = torch.randn(1) * torch.sqrt(torch.tensor(self.pv_var))
-        # print("GENERATED PV is: ", self.meloPV)
+    def take_action(self, side, market=CDA, seed=0) -> List:
+        """Price and build this arrival's order(s) (role-specific)."""
+        raise NotImplementedError
 
+    def final_value(self, fundamental_val) -> float:
+        """Total end-of-simulation payoff for this agent (role-specific)."""
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Identity / shared helpers
+    # ------------------------------------------------------------------
     def get_id(self) -> int:
         return self.agent_id
 
+    def __str__(self):
+        return f'{self.role}{self.agent_id}'
+
     def estimate_fundamental(self):
-        mean, r, T = self.market.get_info()
-        t = self.market.get_time()
-        val = self.market.get_fundamental_value()
+        mean, r, T = self.cdaMarket.get_info()
+        t = self.cdaMarket.get_time()
+        val = self.cdaMarket.get_fundamental_value()
+        rho = (1 - r) ** (T - t)
+        return (1 - rho) * mean + rho * val
 
-        rho = (1-r)**(T-t)
+    def get_pos_value(self) -> float:
+        return self.pv.value_at_position(self.position)
 
-        estimate = (1-rho)*mean + rho*val
-        # print(f'It is time {t} with final time {T} and I observed {val} and my estimate is {rho, estimate}')
-        return estimate
-        # return estimate + np.random.normal(0, np.sqrt(3e5))
+    # ------------------------------------------------------------------
+    # M-ELO standing-order management (shared)
+    # ------------------------------------------------------------------
+    def melo_order_has_min_surplus(self, estimate):
+        # The standing order still achieves the minimum required surplus Rmin
+        # (self.shade[0]) against the current fundamental estimate.
+        if self.melo_order.order_type == BUY:
+            return self.melo_order.price <= estimate - self.shade[0]
+        return self.melo_order.price >= estimate + self.shade[0]
 
     def withdraw_melo_order(self, reason="unspecified"):
-        """Sibling of ZIAgent.withdraw_melo_order: remove this agent's standing
-        M-ELO order(s) from the M-ELO book and clear the local handle. MOBI agents
-        have no keep logic, so they always withdraw-and-resubmit (paper §3.1)."""
-        if self.meloMarket is not None and self.order_tracker is not None:
-            self.meloMarket.withdraw_all(self.agent_id, self.order_tracker)
+        # Record that the agent is dropping its standing M-ELO order. The
+        # simulator owns the books and performs the actual removal; this only
+        # updates the agent's own bookkeeping (queue status at drop time, the
+        # removed counter, the removal log, and clearing the cached order).
+        queue_status = None
+        if self.melo_order_tracker is not None and self.melo_order is not None:
+            queue_status = self.melo_order_tracker.get(self.melo_order.order_id)
+        self.melo_orders_removed += 1
+        self.melo_removal_log.append((self.cdaMarket.get_time(), reason, queue_status))
         self.melo_order = None
 
-    def take_action(self, side: bool, market) -> List[Order]:
-        t = self.market.get_time()
-        # Arrival process: withdraw any standing M-ELO order before resubmitting.
-        if self.melo_order is not None:
-            self.withdraw_melo_order()
-        self.generate_melo_pv()
-        # print("ACTION WAS TAKEN AT TIME ",t, " by agent, ", self.agent_id, "at PV: ", self.meloPV )
-        # if side == BUY:
-        price = self.estimate_fundamental() + self.meloPV
-            # price = midpoint + self.meloPv[0]
-        # else:
-        #     price = self.estimate_fundamental() + self.meloPV
-            # price = midpoint - self.meloPv[0]
-        
-        if market == CDA:
-            #print(f"MY shade is! {self.shade}")
-            spread = self.shade[1] - self.shade[0]
-            valuation_offset = spread*random.random() + self.shade[0]
-            if side == BUY:
-                price -= valuation_offset
-            else:
-                price += valuation_offset
-        
-        order = Order(
-            price=price.item(),
-            quantity=5,
-            agent_id=self.get_id(),
-            time=t,
-            order_type=side,
-            order_id=random.randint(1, 10000000) # TODO: change to a trackable id
-        )
-        if market == MELO:
-            self.melo_order = order
-        return [order]
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+    def act(self, time: int = None):
+        """Single per-arrival entry point. Returns ``(venue, orders)``: an empty
+        ``orders`` list means "keep my standing M-ELO order", a non-empty one
+        means "replace". The agent manages its orders; the simulator steps and
+        holds the markets."""
+        venue = MELO if random.random() < self.melo_proportion else CDA
+        side = random.choice([BUY, SELL])
+        orders = self.take_action(side, venue)
+        return venue, orders
 
+    # ------------------------------------------------------------------
+    # Fills
+    # ------------------------------------------------------------------
     def record_trade(self, side, quantity) -> None:
-        # print("----------------------")
-        # print("Trade was done at ",self.market.get_time(), " by agent, ", self.agent_id, "at PV: ", self.meloPV)
-        # print("----------------------")
-        if side == BUY:
-            self.melo_pv_history.append((quantity,self.meloPV))
-        else:
-            self.melo_pv_history.append((-quantity, self.meloPV))
+        """Book a fill. Default no-op (ZI); MOBI overrides to record its PV."""
 
     def update_position(self, q, p):
         self.position += q
         self.cash += p
-        self.melo_order = None  # a fill clears the standing order handle
+        # A fill means the agent's single outstanding order executed, so any
+        # cached M-ELO order is no longer live.
+        self.melo_order = None
 
-    def __str__(self):
-        return f'ZI{self.agent_id}'
-
-    def get_pos_value(self) -> float:
-        return self.pv.value_at_position(self.inventory)
-
+    # ------------------------------------------------------------------
+    # Reset
+    # ------------------------------------------------------------------
     def reset(self):
-        self.inventory = 0
+        self.position = 0
         self.cash = 0
         self.pv = PrivateValues(self.q_max, self.pv_var)
-
-    def receive_market_event(self, time: float, fundamental: float):
-        """
-        Process a market event.
-        
-        Args:
-            time: Current time
-            fundamental: Current fundamental value
-        """
-        # Cancel old orders if any
-        self.cancel_orders()
-        
-        # Skip if inventory is at max in either direction
-        if abs(self.inventory) >= self.q_max:
-            return
-        
-        # Decide whether to send an order and to which market
-        market_choice = random.random()
-        
-        # Sample private value
-        pv = np.random.normal(0, np.sqrt(self.pv_var))
-        
-        # Set price as fundamental + private value
-        price = fundamental + pv
-        
-        # Decide whether to buy or sell
-        if self.inventory > 0:  # More likely to sell if inventory is positive
-            is_buy = random.random() < 0.3
-        elif self.inventory < 0:  # More likely to buy if inventory is negative
-            is_buy = random.random() < 0.7
-        else:  # Equal chance if inventory is zero
-            is_buy = random.random() < 0.5
-        
-        direction = BUY if is_buy else SELL
-        quantity = self.order_quantity
-        
-        # Choose market based on allocation proportions
-        if market_choice < self.cda_proportion:
-            # Send to CDA market
-            if self.market is not None:
-                order_id = self.market.submit_order(
-                    agent_id=self.agent_id,
-                    direction=direction,
-                    price=price,
-                    quantity=quantity,
-                    time=time
-                )
-                self.active_orders[order_id] = {
-                    "market": "CDA",
-                    "direction": direction,
-                    "price": price,
-                    "quantity": quantity
-                }
-        elif market_choice < (self.cda_proportion + self.melo_proportion):
-            # Send to MELO market
-            if self.meloMarket is not None:
-                order_id = self.meloMarket.submit_order(
-                    agent_id=self.agent_id,
-                    direction=direction,
-                    price=price,
-                    quantity=quantity,
-                    time=time
-                )
-                self.active_orders[order_id] = {
-                    "market": "MELO",
-                    "direction": direction,
-                    "price": price,
-                    "quantity": quantity
-                }
-    
-    def receive_execution(self, order_id: str, price: float, quantity: int, time: float):
-        """
-        Process a trade execution.
-        
-        Args:
-            order_id: Order ID
-            price: Execution price
-            quantity: Executed quantity
-            time: Execution time
-        """
-        if order_id in self.active_orders:
-            order = self.active_orders[order_id]
-            
-            if order["direction"] == BUY:
-                self.inventory += quantity
-                self.cash -= price * quantity
-            else:  # SELL
-                self.inventory -= quantity
-                self.cash += price * quantity
-            
-            # Remove from active orders if fully executed
-            if quantity >= order["quantity"]:
-                del self.active_orders[order_id]
-            else:
-                order["quantity"] -= quantity
-    
-    def receive_melo_execution(self, order_id: str, price: float, quantity: int, time: float):
-        """
-        Process a MELO trade execution.
-        
-        Args:
-            order_id: Order ID
-            price: Execution price
-            quantity: Executed quantity
-            time: Execution time
-        """
-        if order_id in self.active_orders:
-            order = self.active_orders[order_id]
-            
-            if order["direction"] == BUY:
-                self.inventory += quantity
-                self.melo_profit -= price * quantity
-            else:  # SELL
-                self.inventory -= quantity
-                self.melo_profit += price * quantity
-            
-            # Remove from active orders if fully executed
-            if quantity >= order["quantity"]:
-                del self.active_orders[order_id]
-            else:
-                order["quantity"] -= quantity
-    
-    def cancel_orders(self):
-        """Cancel all active orders."""
-        for order_id, order in list(self.active_orders.items()):
-            if order["market"] == "CDA" and self.market is not None:
-                self.market.cancel_order(order_id)
-            elif order["market"] == "MELO" and self.meloMarket is not None:
-                self.meloMarket.cancel_order(order_id)
-        
-        self.active_orders = {}
-    
-    def get_total_profit(self, fundamental: float):
-        """
-        Calculate total profit.
-        
-        Args:
-            fundamental: Current fundamental value
-            
-        Returns:
-            Total profit including mark-to-market value
-        """
-        mark_to_market = self.inventory * fundamental
-        return self.cash + mark_to_market
-    
-    def get_melo_profit(self):
-        """
-        Get profit from MELO market.
-        
-        Returns:
-            MELO market profit
-        """
-        return self.melo_profit
-
+        self.melo_order = None
+        self.melo_orders_placed = 0
+        self.melo_orders_removed = 0
+        self.melo_orders_encountered = 0
+        self.melo_removal_log = []
+        self._reset_role_state()
