@@ -26,7 +26,7 @@ class MELOSimulatorSampledArrival:
     the markets**. It owns the CDA order book (``market``) and the M-ELO book
     (``meloMarket``), advances the clock, delivers arrival events to agents,
     inserts the orders they hand back, and runs the market mechanics each tick
-    (M-ELO eligibility/holding/activation queues and matching, CDA matching,
+    (M-ELO eligibility/holding/active queues and matching, CDA matching,
     fill booking).
 
     Deciding *what* to do with an order — which venue, which side, and whether
@@ -322,7 +322,7 @@ class MELOSimulatorSampledArrival:
                 for (removal_time, reason, queue_status) in agent.melo_removal_log:
                     self.zi_removal_log.append((agent_id, removal_time, reason, queue_status))
 
-        activation_queue = len(self.meloMarket.order_book.buy_activation_queue) + len(self.meloMarket.order_book.sell_activation_queue)
+        holding_queue = len(self.meloMarket.order_book.buy_holding_queue) + len(self.meloMarket.order_book.sell_holding_queue)
         active_queue = len(self.meloMarket.order_book.buy_active_queue) + len(self.meloMarket.order_book.sell_active_queue)
         elig_queue = self.meloMarket.order_book.buy_eligibility_queue.count() + self.meloMarket.order_book.sell_eligibility_queue.count()
 
@@ -339,13 +339,13 @@ class MELOSimulatorSampledArrival:
             "buy_cancelled": self.meloMarket.order_book.buy_cancelled,
             "sell_cancelled": self.meloMarket.order_book.sell_cancelled,
             "removed_eligibility": self.meloMarket.order_book.removed_eligibility,
-            "removed_activation": self.meloMarket.order_book.removed_activation,
+            "removed_holding": self.meloMarket.order_book.removed_holding,
             "removed_active": self.meloMarket.order_book.removed_active,
             "melo_orders": self.melo_orders,
             "fundamental_estimates": self.fundamental_estimates,
             "num_orders": self.num_orders,
             "elig_queue": elig_queue,
-            "activation_queue": activation_queue,
+            "holding_queue": holding_queue,
             "active_queue": active_queue,
             "zi_orders_placed": self.zi_orders_placed,
             "zi_orders_removed": self.zi_orders_removed,
